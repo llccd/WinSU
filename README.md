@@ -10,9 +10,9 @@ winsu.exe [-acl SDDL] [-d desktop] [-p priv_present] [-P priv_enabled]
     [-g count sid_group1 sid_group2 ...] [user_sid] [-- cmdline]
 
 -acl SDDL
-    Changes default DACL of the process.
+    Changes default DACL of the process and DACL of the token.
 -d desktop
-    Create process in specified desktop, default "WinSta0\Default".
+    Create process in specified desktop.
 -p priv_present
     The privileges hold by the process, in bitmap form.
     Default is 0xFFFFFFFFE (all avaliable privileges).
@@ -21,7 +21,7 @@ winsu.exe [-acl SDDL] [-d desktop] [-p priv_present] [-P priv_enabled]
     Default is 0xFFFFFFFFE (all avaliable privileges).
 -s session_id
     Create process in specified session, default to
-    the session of current process (winsu.exe).
+    the session of winsu process.
 -nw
     Do not wait for process to end.
 -c
@@ -37,14 +37,14 @@ winsu.exe [-acl SDDL] [-d desktop] [-p priv_present] [-P priv_enabled]
     HI: High
     SI: System
 -M mandatory_policy
-    Whteher integrity level is enforced. One of:
+    Whether integrity level is enforced. One of:
     0:  TOKEN_MANDATORY_POLICY_OFF
     1:  TOKEN_MANDATORY_POLICY_NO_WRITE_UP
     2:  TOKEN_MANDATORY_POLICY_NEW_PROCESS_MIN
     3:  TOKEN_MANDATORY_POLICY_VALID_MASK
     Consult docs.microsoft.com for more details, default is 0.
 -g count sid_group1 sid_group2 ...
-    Add additional groups to the token.
+    Add additional group membership to the token.
 user_sid
     User SID of the token, default "S-1-5-18".
 -- cmdline
@@ -52,11 +52,3 @@ user_sid
 ```
 
 If you start WinSU without any commandline options, it will execute `%ComSpec%` as user `NT AUTHORITY\SYSTEM`, with `NT SERVICE\TrustedInstaller` added to groups, and all privileges enabled.
-
-## Compile
-
-Use MSVC compilers
-
-```shell
-cl winsu.cpp /GS- /Gy /GL /O2 /link /ENTRY:main /OPT:REF
-```
