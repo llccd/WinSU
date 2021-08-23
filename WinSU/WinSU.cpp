@@ -5,8 +5,6 @@
 #include <userenv.h>
 #define _NTDEF_
 #include <ntsecapi.h>
-#pragma comment(lib, "Userenv.lib")
-#pragma comment(lib, "Secur32.lib")
 
 #ifdef _DEBUG
 #define EXIT(x) {return x;}
@@ -14,7 +12,7 @@
 #define EXIT(x) {ExitProcess(x);}
 #endif
 
-typedef NTSTATUS (NTAPI* _ZwCreateToken)(
+extern "C" NTSTATUS NTAPI ZwCreateToken(
 	OUT PHANDLE TokenHandle,
 	IN ACCESS_MASK DesiredAccess,
 	IN POBJECT_ATTRIBUTES ObjectAttributes,
@@ -29,9 +27,6 @@ typedef NTSTATUS (NTAPI* _ZwCreateToken)(
 	IN PACL* DefaultDacl,
 	IN PTOKEN_SOURCE Source
 );
-typedef wchar_t* (NTAPI* _wcsstr)(wchar_t* wcs1, const wchar_t* wcs2);
-typedef unsigned __int64 (NTAPI* _wcstoui64_ntdll)(const wchar_t* strSource, wchar_t** endptr, int base);
-typedef unsigned long (NTAPI* _wcstoul)(const wchar_t* strSource, wchar_t** endptr, int base);
 
 template <size_t N>
 struct SIDN
@@ -41,11 +36,6 @@ struct SIDN
 	SID_IDENTIFIER_AUTHORITY IdentifierAuthority;
 	ULONG SubAuthority[N];
 };
-
-static _wcsstr wcsstr_ntdll;
-static _wcstoui64_ntdll wcstoui64_ntdll;
-static _wcstoul wcstoul_ntdll;
-static _ZwCreateToken ZwCreateToken;
 
 static SID Everyone = { 1, 1, {SECURITY_WORLD_SID_AUTHORITY}, {SECURITY_WORLD_RID} };
 static SID Local = { 1, 1, {SECURITY_LOCAL_SID_AUTHORITY}, {SECURITY_LOCAL_RID} };
@@ -266,21 +256,6 @@ DWORD get_lsass_pid()
 	return pid;
 }
 
-BOOL load_ntdll()
-{
-	const auto ntdll = LoadLibraryW(L"ntdll");
-	if (!ntdll) return false;
-	ZwCreateToken = (_ZwCreateToken)GetProcAddress(ntdll, "ZwCreateToken");
-	if (!ZwCreateToken) return false;
-	wcsstr_ntdll = (_wcsstr)GetProcAddress(ntdll, "wcsstr");
-	if (!wcsstr_ntdll) return false;
-	wcstoui64_ntdll = (_wcstoui64_ntdll)GetProcAddress(ntdll, "_wcstoui64");
-	if (!wcstoui64_ntdll) return false;
-	wcstoul_ntdll = (_wcstoul)GetProcAddress(ntdll, "wcstoul");
-	if (!wcstoul_ntdll) return false;
-	return true;
-}
-
 HANDLE create_token(const PSID& uid, const DWORD64& priv_present, const DWORD64& priv_enabled,
 	const PSID& logon_sid, LUID authid, LPCWSTR dacl, PSID* add_groups, DWORD add_count, const PSID& mandatory)
 {
@@ -367,8 +342,6 @@ LPWSTR current_directory()
 
 int main()
 {
-	if (!load_ntdll()) EXIT(0x100);
-
 	int argc;
 	const auto current_cmdline = GetCommandLineW();
 	const auto argv = CommandLineToArgvW(current_cmdline, &argc);
@@ -409,18 +382,18 @@ int main()
 		else if (!lstrcmpiW(argv[i], L"-p"))
 		{
 			if (++i >= argc) EXIT(0x103);
-			if (*(argv[i - 1] + 1) == L'P') priv_enabled = wcstoui64_ntdll(argv[i], NULL, 16);
-			else priv_present = wcstoui64_ntdll(argv[i], NULL, 16);
+			if (*(argv[i - 1] + 1) == L'P') priv_enabled = _wcstoui64(argv[i], NULL, 16);
+			else priv_present = _wcstoui64(argv[i], NULL, 16);
 		}
 		else if (!lstrcmpiW(argv[i], L"-s"))
 		{
 			if (++i >= argc) EXIT(0x103);
 			if (*(argv[i - 1] + 1) == L'S')
 			{
-				startup_info.wShowWindow = wcstoul_ntdll(argv[i], NULL, 10);
+				startup_info.wShowWindow = wcstoul(argv[i], NULL, 10);
 				startup_info.dwFlags |= STARTF_USESHOWWINDOW;
 			}
-			else session_id = wcstoul_ntdll(argv[i], NULL, 16);
+			else session_id = wcstoul(argv[i], NULL, 16);
 		}
 		else if (!lstrcmpiW(argv[i], L"-nw"))
 		{
@@ -434,7 +407,7 @@ int main()
 		else if (!lstrcmpiW(argv[i], L"-m"))
 		{
 			if (++i >= argc) EXIT(0x103);
-			if (*(argv[i - 1] + 1) == L'M') mandatory_policy.Policy = wcstoul_ntdll(argv[i], NULL, 10);
+			if (*(argv[i - 1] + 1) == L'M') mandatory_policy.Policy = wcstoul(argv[i], NULL, 10);
 			else switch (*argv[i]) {
 			case L'U':
 			case L'u':
@@ -460,13 +433,13 @@ int main()
 				mandatory.SubAuthority[0] = SECURITY_MANDATORY_SYSTEM_RID;
 				break;
 			default:
-				mandatory.SubAuthority[0] = wcstoul_ntdll(argv[i], NULL, 10);
+				mandatory.SubAuthority[0] = wcstoul(argv[i], NULL, 10);
 			}
 		}
 		else if (!lstrcmpiW(argv[i], L"-g"))
 		{
 			if (++i >= argc || add_count) EXIT(0x103);
-			add_count = wcstoul_ntdll(argv[i], NULL, 10);
+			add_count = wcstoul(argv[i], NULL, 10);
 			add_groups = (PSID*)LocalAlloc(LPTR, add_count * sizeof(PSID));
 			for (DWORD j = 0; j < add_count; j++)
 			{
@@ -477,7 +450,7 @@ int main()
 		else if (!lstrcmpiW(argv[i], L"--"))
 		{
 			if (++i >= argc) break;
-			cmd = wcsstr_ntdll(current_cmdline, L"--") + 2;
+			cmd = wcsstr(current_cmdline, L"--") + 2;
 			while (cmd && *cmd == L' ') cmd++;
 			break;
 		}
@@ -487,16 +460,15 @@ int main()
 	}
 	LocalFree(argv);
 
+	if (session_id == -1)
+	{
+		session_id = WTSGetActiveConsoleSessionId();
+		if (session_id == -1) session_id = 0;
+	}
+
 	HANDLE token;
 	if (!OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &token)) EXIT(0x107);
 	enable_all_privileges(token);
-
-	if (session_id == -1)
-	{
-		DWORD length;
-		GetTokenInformation(token, TokenSessionId, &session_id, sizeof(DWORD), &length);
-		if (session_id == -1) EXIT(0x108);
-	}
 	auto authid = get_auth_id(user, session_id);
 	auto logon_sid = get_logon_sid(token);
 	CloseHandle(token);
@@ -511,7 +483,7 @@ int main()
 
 	token = create_token(user, priv_present, priv_enabled, logon_sid, authid, dacl, add_groups, add_count, &mandatory);
 	if (!token) EXIT(0x112);
-	if(user != &LocalSystem) LocalFree(user);
+	if (user != &LocalSystem) LocalFree(user);
 
 	SetTokenInformation(token, TokenMandatoryPolicy, (void*)&mandatory_policy, sizeof(TOKEN_MANDATORY_POLICY));
 	SetTokenInformation(token, TokenSessionId, (void*)&session_id, sizeof(DWORD));

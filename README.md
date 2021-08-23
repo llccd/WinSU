@@ -52,3 +52,7 @@ user_sid
 ```
 
 If you start WinSU without any commandline options, it will execute `%ComSpec%` as user `NT AUTHORITY\SYSTEM`, with `NT SERVICE\TrustedInstaller` added to groups, and all privileges enabled.
+
+## Notes
+
+`ntdllp.lib` in `WinSU\lib` is taken from Windows Driver Kit 10.0.19041.0
