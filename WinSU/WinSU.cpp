@@ -51,6 +51,8 @@ static SIDN<2> Administrators = { 1, 2, {SECURITY_NT_AUTHORITY}, {SECURITY_BUILT
 static SIDN<2> Users = { 1, 2, {SECURITY_NT_AUTHORITY}, {SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_USERS} };
 static SIDN<6> TrustedInstaller = { 1, 6, {SECURITY_NT_AUTHORITY}, {80,956008885,3418522649,1831038044,1853292631,2271478464} };
 
+static HANDLE heap = 0;
+
 DWORD count_one(DWORD64 x)
 {
 	x = (x & 0x5555555555555555) + (x >> 1 & 0x5555555555555555);
@@ -65,7 +67,7 @@ DWORD count_one(DWORD64 x)
 PTOKEN_PRIVILEGES generate_privilege(const DWORD64& priv, const DWORD64& enabled)
 {
 	const auto priv_count = count_one(priv);
-	auto privileges = (PTOKEN_PRIVILEGES)LocalAlloc(LPTR, FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges[priv_count]));
+	auto privileges = (PTOKEN_PRIVILEGES)HeapAlloc(heap, 0, FIELD_OFFSET(TOKEN_PRIVILEGES, Privileges[priv_count]));
 	if (!privileges) return NULL;
 
 	privileges->PrivilegeCount = priv_count;
@@ -90,7 +92,7 @@ PTOKEN_GROUPS generate_groups(const PSID& logon_sid, PSID* add_groups, const DWO
 	DWORD group_count = 12 + add_count;
 	if (logon_sid) group_count++;
 
-	auto groups = (PTOKEN_GROUPS)LocalAlloc(LPTR, FIELD_OFFSET(TOKEN_GROUPS, Groups[group_count]));
+	auto groups = (PTOKEN_GROUPS)HeapAlloc(heap, 0, FIELD_OFFSET(TOKEN_GROUPS, Groups[group_count]));
 	if (!groups) return NULL;
 
 	groups->GroupCount = group_count;
@@ -140,8 +142,8 @@ PTOKEN_GROUPS generate_groups(const PSID& logon_sid, PSID* add_groups, const DWO
 
 void free_groups(PTOKEN_GROUPS groups)
 {
-	for (DWORD i = 12; i < groups->GroupCount; ++i) LocalFree(groups->Groups[i].Sid);
-	LocalFree(groups);
+	for (DWORD i = 12; i < groups->GroupCount; ++i) HeapFree(heap, 0, groups->Groups[i].Sid);
+	HeapFree(heap, 0, groups);
 }
 
 LPVOID get_token_info(HANDLE token, const TOKEN_INFORMATION_CLASS& type)
@@ -151,7 +153,7 @@ LPVOID get_token_info(HANDLE token, const TOKEN_INFORMATION_CLASS& type)
 	GetTokenInformation(token, type, NULL, 0, &length);
 	if (GetLastError() == ERROR_INSUFFICIENT_BUFFER)
 	{
-		buf = (void*)LocalAlloc(LPTR, length);
+		buf = (void*)HeapAlloc(heap, 0, length);
 		GetTokenInformation(token, type, buf, length, &length);
 	}
 	return buf;
@@ -166,7 +168,7 @@ void enable_all_privileges(HANDLE token)
 			privileges->Privileges[i].Attributes = SE_PRIVILEGE_ENABLED;
 
 		AdjustTokenPrivileges(token, false, privileges, 0, NULL, NULL);
-		LocalFree(privileges);
+		HeapFree(heap, 0, privileges);
 	}
 }
 
@@ -180,18 +182,18 @@ PSID get_logon_sid(HANDLE token)
 		if (groups->Groups[i].Attributes & SE_GROUP_LOGON_ID)
 		{
 			const auto length = GetLengthSid(groups->Groups[i].Sid);
-			logon_sid = (PSID)LocalAlloc(LPTR, length);
+			logon_sid = (PSID)HeapAlloc(heap, 0, length);
 			if (!logon_sid) break;
 
 			if (!CopySid(length, logon_sid, groups->Groups[i].Sid))
 			{
-				LocalFree(logon_sid);
+				HeapFree(heap, 0, logon_sid);
 				logon_sid = NULL;
 			}
 			break;
 		}
 
-	LocalFree(groups);
+	HeapFree(heap, 0, groups);
 	return logon_sid;
 }
 
@@ -224,7 +226,8 @@ LUID get_auth_id(const PSID& uid, const DWORD& session_id)
 
 BOOL get_token_pid(const DWORD& ProcessId, PHANDLE TokenHandle)
 {
-	const auto process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, ProcessId);
+	auto process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, ProcessId);
+	if (!process) process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
 	if (!process) return false;
 
 	const auto ret = OpenProcessToken(process, MAXIMUM_ALLOWED, TokenHandle);
@@ -260,7 +263,7 @@ HANDLE create_token(const PSID& uid, const DWORD64& priv_present, const DWORD64&
 	const PSID& logon_sid, LUID authid, LPCWSTR dacl, PSID* add_groups, DWORD add_count, const PSID& mandatory)
 {
 	SECURITY_QUALITY_OF_SERVICE sqos = {sizeof(sqos), SecurityDelegation, SECURITY_STATIC_TRACKING, FALSE};
-	OBJECT_ATTRIBUTES oa = {sizeof(oa), 0, 0, 0, 0, &sqos};
+	OBJECT_ATTRIBUTES oa = {sizeof(oa), NULL, NULL, 0, NULL, &sqos};
 	LARGE_INTEGER li = { {0xFFFFFFFF, -1} };
 	TOKEN_SOURCE source = { {'F', 'r', 'e', 'e', 'H', 'K', 0}, {0x99996E2F, 0x51495FA9} };
 
@@ -283,10 +286,10 @@ HANDLE create_token(const PSID& uid, const DWORD64& priv_present, const DWORD64&
 		size += (sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD)) + sizeof(Administrators);
 		if (logon_sid) size += (sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD)) + GetLengthSid(logon_sid);
 		size = (size + (sizeof(DWORD) - 1)) & 0xfffffffc;
-		default_dacl = (PACL)LocalAlloc(LPTR, size);
+		default_dacl = (PACL)HeapAlloc(heap, 0, size);
 		if (!default_dacl)
 		{
-			LocalFree(sd);
+			HeapFree(heap, 0, sd);
 			return NULL;
 		}
 
@@ -305,9 +308,9 @@ HANDLE create_token(const PSID& uid, const DWORD64& priv_present, const DWORD64&
 	ZwCreateToken(&elevated_token, TOKEN_ALL_ACCESS, &oa, TokenPrimary, &authid, &li, &user, groups, privileges,
 	              &owner, &primary_group, &default_dacl, &source);
 
-	if (!present) LocalFree(default_dacl);
-	LocalFree(sd);
-	LocalFree(privileges);
+	if (!present) HeapFree(heap, 0, default_dacl);
+	HeapFree(heap, 0, sd);
+	HeapFree(heap, 0, privileges);
 	free_groups(groups);
 	return elevated_token;
 }
@@ -317,12 +320,12 @@ LPWSTR expand_environment(LPCWSTR src)
 	const auto char_count = ExpandEnvironmentStringsW(src, NULL, 0);
 	if (!char_count) return NULL;
 
-	const auto dst = (LPWSTR)LocalAlloc(LPTR, char_count * sizeof(WCHAR));
+	const auto dst = (LPWSTR)HeapAlloc(heap, 0, char_count * sizeof(WCHAR));
 	if (!dst) return NULL;
 
 	if (char_count == ExpandEnvironmentStringsW(src, dst, char_count)) return dst;
 
-	LocalFree(dst);
+	HeapFree(heap, 0, dst);
 	return NULL;
 }
 
@@ -331,17 +334,20 @@ LPWSTR current_directory()
 	const auto char_count = GetCurrentDirectoryW(0, NULL);
 	if (!char_count) return NULL;
 
-	const auto dst = (LPWSTR)LocalAlloc(LPTR, char_count * sizeof(WCHAR));
+	const auto dst = (LPWSTR)HeapAlloc(heap, 0, char_count * sizeof(WCHAR));
 	if (!dst) return NULL;
 
 	if (char_count == GetCurrentDirectoryW(char_count, dst) + 1) return dst;
 
-	LocalFree(dst);
+	HeapFree(heap, 0, dst);
 	return NULL;
 }
 
 int main()
 {
+	heap = GetProcessHeap();
+	if (!heap) EXIT(0x100);
+	
 	int argc;
 	const auto current_cmdline = GetCommandLineW();
 	const auto argv = CommandLineToArgvW(current_cmdline, &argc);
@@ -390,7 +396,7 @@ int main()
 			if (++i >= argc) EXIT(0x103);
 			if (*(argv[i - 1] + 1) == L'S')
 			{
-				startup_info.wShowWindow = wcstoul(argv[i], NULL, 10);
+				startup_info.wShowWindow = (WORD)wcstoul(argv[i], NULL, 10);
 				startup_info.dwFlags |= STARTF_USESHOWWINDOW;
 			}
 			else session_id = wcstoul(argv[i], NULL, 16);
@@ -440,7 +446,7 @@ int main()
 		{
 			if (++i >= argc || add_count) EXIT(0x103);
 			add_count = wcstoul(argv[i], NULL, 10);
-			add_groups = (PSID*)LocalAlloc(LPTR, add_count * sizeof(PSID));
+			add_groups = (PSID*)HeapAlloc(heap, 0, add_count * sizeof(PSID));
 			for (DWORD j = 0; j < add_count; j++)
 			{
 				if (++i >= argc) EXIT(0x103);
@@ -458,11 +464,11 @@ int main()
 			if (!ConvertStringSidToSidW(argv[i], &user)) EXIT(0x105);
 		}
 	}
-	LocalFree(argv);
+	HeapFree(heap, 0, argv);
 
 	if (session_id == -1)
 	{
-		session_id = WTSGetActiveConsoleSessionId();
+		ProcessIdToSessionId(GetCurrentProcessId(), &session_id);
 		if (session_id == -1) session_id = 0;
 	}
 
@@ -483,7 +489,7 @@ int main()
 
 	token = create_token(user, priv_present, priv_enabled, logon_sid, authid, dacl, add_groups, add_count, &mandatory);
 	if (!token) EXIT(0x112);
-	if (user != &LocalSystem) LocalFree(user);
+	if (user != &LocalSystem) HeapFree(heap, 0, user);
 
 	SetTokenInformation(token, TokenMandatoryPolicy, (void*)&mandatory_policy, sizeof(TOKEN_MANDATORY_POLICY));
 	SetTokenInformation(token, TokenSessionId, (void*)&session_id, sizeof(DWORD));
@@ -499,8 +505,8 @@ int main()
 
 	CloseHandle(token);
 	DestroyEnvironmentBlock(lpEnvironment);
-	LocalFree(cmdline);
-	LocalFree(working_directory);
+	HeapFree(heap, 0, cmdline);
+	HeapFree(heap, 0, working_directory);
 	FreeConsole();
 	DWORD exit_code = 0;
 	if (wait)
