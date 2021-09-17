@@ -7,9 +7,12 @@
 #include <ntsecapi.h>
 
 #ifdef _DEBUG
-#define EXIT(x) {return x;}
+#include <iostream>
+#define EXIT(msg, x) {puts(msg); return x;}
+#define EXIT1(x) {return x;}
 #else
-#define EXIT(x) {ExitProcess(x);}
+#define EXIT(msg, x) {ExitProcess(x);}
+#define EXIT1(x) {ExitProcess(x);}
 #endif
 
 extern "C" NTSTATUS NTAPI ZwCreateToken(
@@ -154,6 +157,7 @@ LPVOID get_token_info(HANDLE token, const TOKEN_INFORMATION_CLASS& type)
 	if (GetLastError() == ERROR_INSUFFICIENT_BUFFER)
 	{
 		buf = (void*)HeapAlloc(heap, 0, length);
+		if (!buf) return NULL;
 		GetTokenInformation(token, type, buf, length, &length);
 	}
 	return buf;
@@ -227,7 +231,7 @@ LUID get_auth_id(const PSID& uid, const DWORD& session_id)
 BOOL get_token_pid(const DWORD& ProcessId, PHANDLE TokenHandle)
 {
 	auto process = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, ProcessId);
-	if (!process) process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+	if (GetLastError() == ERROR_ACCESS_DENIED) process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
 	if (!process) return false;
 
 	const auto ret = OpenProcessToken(process, MAXIMUM_ALLOWED, TokenHandle);
@@ -309,7 +313,7 @@ HANDLE create_token(const PSID& uid, const DWORD64& priv_present, const DWORD64&
 	              &owner, &primary_group, &default_dacl, &source);
 
 	if (!present) HeapFree(heap, 0, default_dacl);
-	HeapFree(heap, 0, sd);
+	LocalFree(sd);
 	HeapFree(heap, 0, privileges);
 	free_groups(groups);
 	return elevated_token;
@@ -346,12 +350,12 @@ LPWSTR current_directory()
 int main()
 {
 	heap = GetProcessHeap();
-	if (!heap) EXIT(0x100);
+	if (!heap) EXIT("GetProcessHeap() Failed", 0x100);
 	
 	int argc;
 	const auto current_cmdline = GetCommandLineW();
 	const auto argv = CommandLineToArgvW(current_cmdline, &argc);
-	if (!argv) EXIT(0x101);
+	if (!argv) EXIT("CommandLineToArgv() Failed", 0x101);
 
 	PSID user = &LocalSystem;
 	auto cmd = L"%ComSpec% /K";
@@ -370,30 +374,29 @@ int main()
 	PSID* add_groups = NULL;
 	DWORD64 priv_present = 0xFFFFFFFFE, priv_enabled = 0xFFFFFFFFE;
 	TOKEN_MANDATORY_POLICY mandatory_policy = { 0 };
-	DWORD session_id = -1, lsass_pid = get_lsass_pid();
-	if (lsass_pid == -1) EXIT(0x102);
+	DWORD session_id = -1;
 
 	for (int i = 1; i < argc; ++i)
 	{
 		if (!lstrcmpiW(argv[i], L"-acl"))
 		{
-			if (++i >= argc) EXIT(0x103);
+			if (++i >= argc) EXIT("Insufficient argument", 0x103);
 			dacl = argv[i];
 		}
 		else if (!lstrcmpiW(argv[i], L"-d"))
 		{
-			if (++i >= argc) EXIT(0x103);
+			if (++i >= argc) EXIT("Insufficient argument", 0x103);
 			startup_info.lpDesktop = argv[i];
 		}
 		else if (!lstrcmpiW(argv[i], L"-p"))
 		{
-			if (++i >= argc) EXIT(0x103);
+			if (++i >= argc) EXIT("Insufficient argument", 0x103);
 			if (*(argv[i - 1] + 1) == L'P') priv_enabled = _wcstoui64(argv[i], NULL, 16);
 			else priv_present = _wcstoui64(argv[i], NULL, 16);
 		}
 		else if (!lstrcmpiW(argv[i], L"-s"))
 		{
-			if (++i >= argc) EXIT(0x103);
+			if (++i >= argc) EXIT("Insufficient argument", 0x103);
 			if (*(argv[i - 1] + 1) == L'S')
 			{
 				startup_info.wShowWindow = (WORD)wcstoul(argv[i], NULL, 10);
@@ -412,7 +415,7 @@ int main()
 		}
 		else if (!lstrcmpiW(argv[i], L"-m"))
 		{
-			if (++i >= argc) EXIT(0x103);
+			if (++i >= argc) EXIT("Insufficient argument", 0x103);
 			if (*(argv[i - 1] + 1) == L'M') mandatory_policy.Policy = wcstoul(argv[i], NULL, 10);
 			else switch (*argv[i]) {
 			case L'U':
@@ -444,13 +447,15 @@ int main()
 		}
 		else if (!lstrcmpiW(argv[i], L"-g"))
 		{
-			if (++i >= argc || add_count) EXIT(0x103);
+			if (++i >= argc) EXIT("Insufficient argument", 0x103);
+			if (add_count) HeapFree(heap, 0, add_groups);
 			add_count = wcstoul(argv[i], NULL, 10);
 			add_groups = (PSID*)HeapAlloc(heap, 0, add_count * sizeof(PSID));
+			if (!add_groups) EXIT("HeapAlloc() failed", 0x103);
 			for (DWORD j = 0; j < add_count; j++)
 			{
-				if (++i >= argc) EXIT(0x103);
-				if (!ConvertStringSidToSidW(argv[i], &add_groups[j])) EXIT(0x104);
+				if (++i >= argc) EXIT("Insufficient argument", 0x103);
+				if (!ConvertStringSidToSidW(argv[i], &add_groups[j])) EXIT("ConvertStringSidToSid() failed", 0x104);
 			}
 		}
 		else if (!lstrcmpiW(argv[i], L"--"))
@@ -461,10 +466,9 @@ int main()
 			break;
 		}
 		else {
-			if (!ConvertStringSidToSidW(argv[i], &user)) EXIT(0x105);
+			if (!ConvertStringSidToSidW(argv[i], &user)) EXIT("ConvertStringSidToSid() failed", 0x105);
 		}
 	}
-	HeapFree(heap, 0, argv);
 
 	if (session_id == -1)
 	{
@@ -473,23 +477,23 @@ int main()
 	}
 
 	HANDLE token;
-	if (!OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &token)) EXIT(0x107);
+	if (!OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &token)) EXIT("Open token of CurrentProcess failed", 0x107);
 	enable_all_privileges(token);
 	auto authid = get_auth_id(user, session_id);
 	auto logon_sid = get_logon_sid(token);
 	CloseHandle(token);
 
-	if (!get_token_pid(lsass_pid, &token)) EXIT(0x109);
+	if (!get_token_pid(get_lsass_pid(), &token)) EXIT("Open token of lsass.exe failed", 0x109);
 	HANDLE dup_token;
-	if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &dup_token)) EXIT(0x110);
+	if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &dup_token)) EXIT("Duplicate impersonation token of lsass.exe failed", 0x110);
 	CloseHandle(token);
 	enable_all_privileges(dup_token);
-	if (!(SetThreadToken(NULL, dup_token) || ImpersonateLoggedOnUser(dup_token))) EXIT(0x111);
+	if (!(SetThreadToken(NULL, dup_token) || ImpersonateLoggedOnUser(dup_token))) EXIT("Impersonate SYSTEM failed", 0x111);
 	CloseHandle(dup_token);
 
 	token = create_token(user, priv_present, priv_enabled, logon_sid, authid, dacl, add_groups, add_count, &mandatory);
-	if (!token) EXIT(0x112);
-	if (user != &LocalSystem) HeapFree(heap, 0, user);
+	if (!token) EXIT("Failed to create token", 0x112);
+	if (user != &LocalSystem) LocalFree(user);
 
 	SetTokenInformation(token, TokenMandatoryPolicy, (void*)&mandatory_policy, sizeof(TOKEN_MANDATORY_POLICY));
 	SetTokenInformation(token, TokenSessionId, (void*)&session_id, sizeof(DWORD));
@@ -499,22 +503,22 @@ int main()
 	CreateEnvironmentBlock(&lpEnvironment, token, TRUE);
 	auto working_directory = current_directory();
 	auto cmdline = expand_environment(cmd);
+	LocalFree(argv);
 	if (!CreateProcessAsUserW(token, NULL, cmdline, NULL, NULL, false, creation_flags, lpEnvironment,
 	                           working_directory, &startup_info, &process_info))
-		EXIT(0x113);
+		EXIT("CreateProcessAsUser() failed", 0x113);
 
 	CloseHandle(token);
 	DestroyEnvironmentBlock(lpEnvironment);
 	HeapFree(heap, 0, cmdline);
 	HeapFree(heap, 0, working_directory);
 	FreeConsole();
+	CloseHandle(process_info.hThread);
 	DWORD exit_code = 0;
 	if (wait)
 	{
 		WaitForSingleObjectEx(process_info.hProcess, INFINITE, false);
 		GetExitCodeProcess(process_info.hProcess, &exit_code);
 	}
-	CloseHandle(process_info.hThread);
-	CloseHandle(process_info.hProcess);
-	EXIT(exit_code);
+	EXIT1(exit_code);
 }
