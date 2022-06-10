@@ -2,6 +2,7 @@
 #include <psapi.h>
 #include <winternl.h>
 #include <sddl.h>
+#include <wtsapi32.h>
 #include <userenv.h>
 #define _NTDEF_
 #include <ntsecapi.h>
@@ -263,6 +264,24 @@ DWORD get_lsass_pid()
 	return pid;
 }
 
+DWORD get_lsass_pid2()
+{
+	PWTS_PROCESS_INFOW processList;
+	DWORD processCount = 0, pLevel = 0;
+	DWORD pid = -1;
+	if (!WTSEnumerateProcessesExW(WTS_CURRENT_SERVER_HANDLE, &pLevel, 0, (LPWSTR*)&processList, &processCount))
+		return -1;
+
+	for (DWORD i = 0; i < processCount; i++) {
+		if (lstrcmpiW(processList[i].pProcessName, L"lsass.exe") || !EqualSid(processList[i].pUserSid, &LocalSystem)) continue;
+		pid = processList[i].ProcessId;
+		break;
+	}
+
+	WTSFreeMemoryEx(WTSTypeProcessInfoLevel0, processList, processCount);
+	return pid;
+}
+
 HANDLE create_token(const PSID& uid, const DWORD64& priv_present, const DWORD64& priv_enabled,
 	const PSID& logon_sid, LUID authid, LPCWSTR dacl, PSID* add_groups, DWORD add_count, const PSID& mandatory)
 {
@@ -483,9 +502,12 @@ int main()
 	auto logon_sid = get_logon_sid(token);
 	CloseHandle(token);
 
-	if (!get_token_pid(get_lsass_pid(), &token)) EXIT("Open token of lsass.exe failed", 0x109);
+	auto pid = get_lsass_pid();
+	if (pid == -1) pid = get_lsass_pid2();
+	if (pid == -1) EXIT("Failed to get lsass PID", 0x108);
+	if (!get_token_pid(pid, &token)) EXIT("Open token of lsass failed", 0x109);
 	HANDLE dup_token;
-	if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &dup_token)) EXIT("Duplicate impersonation token of lsass.exe failed", 0x110);
+	if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &dup_token)) EXIT("Duplicate impersonation token of lsass failed", 0x110);
 	CloseHandle(token);
 	enable_all_privileges(dup_token);
 	if (!(SetThreadToken(NULL, dup_token) || ImpersonateLoggedOnUser(dup_token))) EXIT("Impersonate SYSTEM failed", 0x111);
