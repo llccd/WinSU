@@ -379,14 +379,15 @@ int main()
 	PSID user = &LocalSystem;
 	auto cmd = L"%ComSpec% /K";
 	auto dacl = L"G:BA";
-	STARTUPINFOW startup_info;
-	startup_info.cb = sizeof(STARTUPINFOW);
-	startup_info.cbReserved2 = 0;
-	startup_info.lpDesktop = NULL;
-	startup_info.lpTitle = NULL;
-	startup_info.lpReserved = NULL;
-	startup_info.lpReserved2 = NULL;
-	startup_info.dwFlags = 0;
+	STARTUPINFOEXW si;
+	auto startup_info = &si.StartupInfo;
+	startup_info->cb = sizeof(STARTUPINFOW);
+	startup_info->cbReserved2 = 0;
+	startup_info->lpDesktop = NULL;
+	startup_info->lpTitle = NULL;
+	startup_info->lpReserved = NULL;
+	startup_info->lpReserved2 = NULL;
+	startup_info->dwFlags = 0;
 	DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_DEFAULT_ERROR_MODE;
 	BOOL wait = true;
 	DWORD add_count = 0;
@@ -405,7 +406,7 @@ int main()
 		else if (!lstrcmpiW(argv[i], L"-d"))
 		{
 			if (++i >= argc) EXIT("Insufficient argument", 0x103);
-			startup_info.lpDesktop = argv[i];
+			startup_info->lpDesktop = argv[i];
 		}
 		else if (!lstrcmpiW(argv[i], L"-p"))
 		{
@@ -418,14 +419,15 @@ int main()
 			if (++i >= argc) EXIT("Insufficient argument", 0x103);
 			if (*(argv[i - 1] + 1) == L'S')
 			{
-				startup_info.wShowWindow = (WORD)wcstoul(argv[i], NULL, 10);
-				startup_info.dwFlags |= STARTF_USESHOWWINDOW;
+				startup_info->wShowWindow = (WORD)wcstoul(argv[i], NULL, 10);
+				startup_info->dwFlags |= STARTF_USESHOWWINDOW;
 			}
 			else session_id = wcstoul(argv[i], NULL, 16);
 		}
 		else if (!lstrcmpiW(argv[i], L"-nw"))
 		{
 			wait = false;
+			creation_flags |= CREATE_NEW_CONSOLE;
 		}
 		else if (!lstrcmpiW(argv[i], L"-c"))
 		{
@@ -526,8 +528,23 @@ int main()
 	auto working_directory = current_directory();
 	auto cmdline = expand_environment(cmd);
 	LocalFree(argv);
-	if (!CreateProcessAsUserW(token, NULL, cmdline, NULL, NULL, false, creation_flags, lpEnvironment,
-	                           working_directory, &startup_info, &process_info))
+	if (!wait) {
+		PROCESS_BASIC_INFORMATION basicInfo;
+		HANDLE hProcess;
+		NtQueryInformationProcess(GetCurrentProcess(), ProcessBasicInformation, &basicInfo, sizeof(basicInfo), NULL);
+		if (hProcess = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, (DWORD)basicInfo.Reserved3)) {
+			SIZE_T size;
+			InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+			auto attributes = (PPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(heap, 0, size);
+			InitializeProcThreadAttributeList(attributes, 1, 0, &size);
+			UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, &hProcess, sizeof(hProcess), NULL, NULL);
+			startup_info->cb = sizeof(STARTUPINFOEXW);
+			si.lpAttributeList = attributes;
+			creation_flags |= EXTENDED_STARTUPINFO_PRESENT;
+		}
+	}
+	if (!CreateProcessAsUserW(token, NULL, cmdline, NULL, NULL, true, creation_flags, lpEnvironment,
+	                           working_directory, startup_info, &process_info))
 		EXIT("CreateProcessAsUser() failed", 0x113);
 
 	CloseHandle(token);
@@ -541,6 +558,9 @@ int main()
 	{
 		WaitForSingleObjectEx(process_info.hProcess, INFINITE, false);
 		GetExitCodeProcess(process_info.hProcess, &exit_code);
+	}
+	else {
+		DeleteProcThreadAttributeList(si.lpAttributeList);
 	}
 	EXIT1(exit_code);
 }

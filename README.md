@@ -15,15 +15,15 @@ winsu.exe [-acl SDDL] [-d desktop] [-p priv_present] [-P priv_enabled]
     Create process in specified desktop.
 -p priv_present
     The privileges hold by the process, in bitmap form.
-    Default is 0xFFFFFFFFE (all avaliable privileges).
+    Default is 0xFFFFFFFFE (all available privileges).
 -P priv_enabled
     The effective privileges hold by the process, in bitmap form.
-    Default is 0xFFFFFFFFE (all avaliable privileges).
+    Default is 0xFFFFFFFFE (all available privileges).
 -s session_id
     Create process in specified session, default to
     the session of winsu process.
 -nw
-    Do not wait for process to end.
+    Do not wait for process to end. (implies -c)
 -c
     Create new console.
 -C
@@ -51,7 +51,7 @@ user_sid
     Command line to execute, default "%ComSpec% /K".
 ```
 
-If you start WinSU without any commandline options, it will execute `%ComSpec%` as user `NT AUTHORITY\SYSTEM`, with `NT SERVICE\TrustedInstaller` added to groups, and all privileges enabled.
+If you start WinSU without any command line options, it will execute `%ComSpec%` as user `NT AUTHORITY\SYSTEM`, with `NT SERVICE\TrustedInstaller` added to groups, and all privileges enabled.
 
 ## Notes
 
