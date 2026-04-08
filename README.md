@@ -22,6 +22,8 @@ winsu.exe [-acl SDDL] [-d desktop] [-p priv_present] [-P priv_enabled]
 -s session_id
     Create process in specified session, default to
     the session of winsu process.
+-S show_window
+    Controls how the window is to be shown.
 -nw
     Do not wait for process to end. (implies -c)
 -c

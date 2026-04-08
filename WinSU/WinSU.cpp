@@ -12,7 +12,15 @@
 #define EXIT(msg, x) {puts(msg); return x;}
 #define EXIT1(x) {return x;}
 #else
-#define EXIT(msg, x) {ExitProcess(x);}
+void WriteErr(char* s, DWORD l) {
+	HANDLE hOut = GetStdHandle(STD_ERROR_HANDLE);
+	if (GetFileType(hOut) == FILE_TYPE_CHAR)
+		WriteConsoleA(hOut, s, l, NULL, NULL);
+	else
+		WriteFile(hOut, s, l, NULL, NULL);
+}
+
+#define EXIT(msg, x) {WriteErr(msg, sizeof(msg)); ExitProcess(x);}
 #define EXIT1(x) {ExitProcess(x);}
 #endif
 
@@ -369,12 +377,12 @@ LPWSTR current_directory()
 int main()
 {
 	heap = GetProcessHeap();
-	if (!heap) EXIT("GetProcessHeap() Failed", 0x100);
+	if (!heap) EXIT("GetProcessHeap Failed", 0x100);
 	
 	int argc;
 	const auto current_cmdline = GetCommandLineW();
 	const auto argv = CommandLineToArgvW(current_cmdline, &argc);
-	if (!argv) EXIT("CommandLineToArgv() Failed", 0x101);
+	if (!argv) EXIT("CommandLineToArgv Failed", 0x101);
 
 	PSID user = &LocalSystem;
 	auto cmd = L"%ComSpec% /K";
@@ -392,6 +400,7 @@ int main()
 	BOOL wait = true;
 	DWORD add_count = 0;
 	PSID* add_groups = NULL;
+	// Win7: no SeDelegateSessionUserImpersonatePrivilege, priv_present = 0x7FFFFFFFE
 	DWORD64 priv_present = 0xFFFFFFFFE, priv_enabled = 0xFFFFFFFFE;
 	TOKEN_MANDATORY_POLICY mandatory_policy = { 0 };
 	DWORD session_id = -1;
@@ -472,11 +481,11 @@ int main()
 			if (add_count) HeapFree(heap, 0, add_groups);
 			add_count = wcstoul(argv[i], NULL, 10);
 			add_groups = (PSID*)HeapAlloc(heap, 0, add_count * sizeof(PSID));
-			if (!add_groups) EXIT("HeapAlloc() failed", 0x103);
+			if (!add_groups) EXIT("HeapAlloc failed", 0x103);
 			for (DWORD j = 0; j < add_count; j++)
 			{
 				if (++i >= argc) EXIT("Insufficient argument", 0x103);
-				if (!ConvertStringSidToSidW(argv[i], &add_groups[j])) EXIT("ConvertStringSidToSid() failed", 0x104);
+				if (!ConvertStringSidToSidW(argv[i], &add_groups[j])) EXIT("ConvertStringSidToSid failed", 0x104);
 			}
 		}
 		else if (!lstrcmpiW(argv[i], L"--"))
@@ -487,7 +496,7 @@ int main()
 			break;
 		}
 		else {
-			if (!ConvertStringSidToSidW(argv[i], &user)) EXIT("ConvertStringSidToSid() failed", 0x105);
+			if (!ConvertStringSidToSidW(argv[i], &user)) EXIT("ConvertStringSidToSid failed", 0x105);
 		}
 	}
 
@@ -498,7 +507,7 @@ int main()
 	}
 
 	HANDLE token;
-	if (!OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &token)) EXIT("Open token of CurrentProcess failed", 0x107);
+	if (!OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &token)) EXIT("Get self token failed", 0x107);
 	enable_all_privileges(token);
 	auto authid = get_auth_id(user, session_id);
 	auto logon_sid = get_logon_sid(token);
@@ -506,17 +515,17 @@ int main()
 
 	auto pid = get_lsass_pid();
 	if (pid == -1) pid = get_lsass_pid2();
-	if (pid == -1) EXIT("Failed to get lsass PID", 0x108);
-	if (!get_token_pid(pid, &token)) EXIT("Open token of lsass failed", 0x109);
+	if (pid == -1) EXIT("Get lsass PID Failed", 0x108);
+	if (!get_token_pid(pid, &token)) EXIT("Get lsass token failed", 0x109);
 	HANDLE dup_token;
-	if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &dup_token)) EXIT("Duplicate impersonation token of lsass failed", 0x110);
+	if (!DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &dup_token)) EXIT("DuplicateToken failed", 0x110);
 	CloseHandle(token);
 	enable_all_privileges(dup_token);
-	if (!(SetThreadToken(NULL, dup_token) || ImpersonateLoggedOnUser(dup_token))) EXIT("Impersonate SYSTEM failed", 0x111);
+	if (!(SetThreadToken(NULL, dup_token) || ImpersonateLoggedOnUser(dup_token))) EXIT("Impersonate failed", 0x111);
 	CloseHandle(dup_token);
 
 	token = create_token(user, priv_present, priv_enabled, logon_sid, authid, dacl, add_groups, add_count, &mandatory);
-	if (!token) EXIT("Failed to create token", 0x112);
+	if (!token) EXIT("ZwCreateToken Failed", 0x112);
 	if (user != &LocalSystem) LocalFree(user);
 
 	SetTokenInformation(token, TokenMandatoryPolicy, (void*)&mandatory_policy, sizeof(TOKEN_MANDATORY_POLICY));
@@ -545,7 +554,7 @@ int main()
 	}
 	if (!CreateProcessAsUserW(token, NULL, cmdline, NULL, NULL, true, creation_flags, lpEnvironment,
 	                           working_directory, startup_info, &process_info))
-		EXIT("CreateProcessAsUser() failed", 0x113);
+		EXIT("CreateProcessAsUser failed", 0x113);
 
 	CloseHandle(token);
 	DestroyEnvironmentBlock(lpEnvironment);
